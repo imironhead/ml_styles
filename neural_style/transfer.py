@@ -72,9 +72,13 @@ def load_image(path):
 
     _, image = tf.WholeFileReader().read(file_names)
 
-    # decode byte data
+    # Decode byte data, no gif please.
+    # NOTE: tf.image.decode_image can decode both jpeg and png. However, the
+    #       shape (height and width) is unknown.
     image = tf.image.decode_jpeg(image, channels=3)
     image = tf.cast(image, tf.float32)
+    shape = tf.shape(image)[:2]
+    image = tf.image.resize_images(image, [224, 224])
     image = tf.reshape(image, [1, 224, 224, 3])
 
     # for VggNet, subtract the mean color of it's training data.
@@ -87,12 +91,12 @@ def load_image(path):
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(coord=coord)
 
-        image = session.run(image)
+        image, shape = session.run([image, shape])
 
         coord.request_stop()
         coord.join(threads)
 
-        return image
+        return image, shape
 
 
 def build_vgg():
@@ -119,11 +123,9 @@ def build_vgg():
     return VggNet.build_19(tf.app.flags.FLAGS.vgg19_path, upstream, end_layer)
 
 
-def content_features(vgg):
+def content_features(vgg, content):
     """
     """
-    content = load_image(tf.app.flags.FLAGS.content_path)
-
     level_content = tf.app.flags.FLAGS.content_level
 
     last_layer = 'conv{}_2'.format(level_content)
@@ -136,11 +138,9 @@ def content_features(vgg):
         return session.run(vgg.__getattr__(last_layer))
 
 
-def style_features(vgg):
+def style_features(vgg, style):
     """
     """
-    style = load_image(tf.app.flags.FLAGS.style_path)
-
     level_style = tf.app.flags.FLAGS.style_level
 
     features = []
@@ -168,7 +168,7 @@ def style_features(vgg):
         return session.run(features)
 
 
-def content_loss(vgg):
+def content_loss(vgg, content):
     """
     """
     level_content = tf.app.flags.FLAGS.content_level
@@ -178,7 +178,7 @@ def content_loss(vgg):
 
     weight_content = tf.app.flags.FLAGS.content_weight
 
-    target_features = content_features(vgg)
+    target_features = content_features(vgg, content)
 
     target_features = tf.constant(target_features)
 
@@ -192,7 +192,7 @@ def content_loss(vgg):
     return weight_content * tf.nn.l2_loss(source_features - target_features)
 
 
-def style_loss(vgg):
+def style_loss(vgg, style):
     """
     """
     level_style = tf.app.flags.FLAGS.style_level
@@ -202,7 +202,7 @@ def style_loss(vgg):
 
     weight_style = tf.app.flags.FLAGS.style_weight
 
-    target_features = style_features(vgg)
+    target_features = style_features(vgg, style)
 
     #
     level_style = tf.app.flags.FLAGS.style_level
@@ -229,26 +229,30 @@ def style_loss(vgg):
     return weight_style * all_loss
 
 
-def transfer_loss(vgg):
+def transfer_loss(vgg, content, style):
     """
     """
-    return content_loss(vgg) + style_loss(vgg)
+    return content_loss(vgg, content) + style_loss(vgg, style)
 
 
 def train():
     """
     """
+    content, content_shape = load_image(tf.app.flags.FLAGS.content_path)
+    style, style_shape = load_image(tf.app.flags.FLAGS.style_path)
+
     vgg = build_vgg()
 
     reporter = tf.summary.FileWriter(tf.app.flags.FLAGS.log_path)
 
     image = tf.add(vgg.upstream, VggNet.mean_color_bgr())
+    image = tf.image.resize_images(image, content_shape)
     image = tf.saturate_cast(image, tf.uint8)
     image = tf.reverse(image, [3])
 
     image_summary = tf.summary.image('generated image', image, max_outputs=2)
 
-    loss = transfer_loss(vgg)
+    loss = transfer_loss(vgg, content, style)
 
     trainer = tf.train \
         .AdamOptimizer(1e-2) \
