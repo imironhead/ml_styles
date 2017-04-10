@@ -62,6 +62,20 @@ class VggNet(object):
     arXiv:1409.1556
     """
     @staticmethod
+    def mean_color_bgr():
+        """
+        mean color from training data in B/G/R order.
+        """
+        return [103.939, 116.779, 123.68]
+
+    @staticmethod
+    def mean_color_rgb():
+        """
+        mean color from training data in R/G/B order.
+        """
+        return [123.68, 116.779, 103.939]
+
+    @staticmethod
     def build_16(path_npy, batch_tensors, end_layer='@_@'):
         """
         Virtual constructor to construct a VGG 16 (D) net.
@@ -129,6 +143,9 @@ class VggNet(object):
             path to a npy file which has all the weights for the net.
         batch_tensors:
             a upstream tensors. The shape must be [-1, 224, 224, 3].
+            color channels should be in B/G/R order.
+            color range should be between 0.0 and 255.0.
+            mean colors should have been subtracted.
         end_layer:
             The end layer name. The net will be build with layers before the
             end layer.
@@ -174,11 +191,6 @@ class VggNet(object):
         # keep layers here
         self._layers = {'upstream': batch_tensors}
 
-        # preprocess the upstream tensors.
-        batch_tensors = tf.multiply(batch_tensors, 255.0)
-        batch_tensors = tf.subtract(batch_tensors, [123.68, 116.779, 103.939])
-        batch_tensors = tf.reverse(batch_tensors, [3])
-
         # build
         for layer_name in layer_names:
             if layer_name == end_layer:
@@ -197,6 +209,8 @@ class VggNet(object):
                 raise Exception('-_-')
 
             self._layers[layer_name] = batch_tensors
+
+        self._layers['downstream'] = batch_tensors
 
     def __getattr__(self, name):
         """

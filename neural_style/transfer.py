@@ -72,9 +72,16 @@ def load_image(path):
 
     _, image = tf.WholeFileReader().read(file_names)
 
+    # decode byte data
     image = tf.image.decode_jpeg(image, channels=3)
-    image = tf.cast(image, tf.float32) / 255.0
+    image = tf.cast(image, tf.float32)
     image = tf.reshape(image, [1, 224, 224, 3])
+
+    # for VggNet, subtract the mean color of it's training data.
+    image = tf.subtract(image, VggNet.mean_color_rgb())
+
+    # R/G/B to B/G/R
+    image = tf.reverse(image, [3])
 
     with tf.Session() as session:
         coord = tf.train.Coordinator()
@@ -235,7 +242,9 @@ def train():
 
     reporter = tf.summary.FileWriter(tf.app.flags.FLAGS.log_path)
 
-    image = tf.saturate_cast(vgg.upstream * 255.0, tf.uint8)
+    image = tf.add(vgg.upstream, VggNet.mean_color_bgr())
+    image = tf.saturate_cast(image, tf.uint8)
+    image = tf.reverse(image, [3])
 
     image_summary = tf.summary.image('generated image', image, max_outputs=2)
 
@@ -248,8 +257,10 @@ def train():
     with tf.Session() as session:
         session.run(tf.global_variables_initializer())
 
-        initialize_upstream = \
-            vgg.upstream.assign(tf.random_uniform([1, 224, 224, 3], 0.0, 1.0))
+        noise = tf.random_uniform([1, 224, 224, 3], 0.0, 255.0)
+        noise = tf.subtract(noise, VggNet.mean_color_bgr())
+
+        initialize_upstream = vgg.upstream.assign(noise)
 
         session.run(initialize_upstream)
 
