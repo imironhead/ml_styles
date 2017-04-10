@@ -172,7 +172,7 @@ class VggNet(object):
         weights = np.load(checkpoint, encoding='latin1').item()
 
         # keep layers here
-        self._layers = {}
+        self._layers = {'upstream': batch_tensors}
 
         # preprocess the upstream tensors.
         batch_tensors = tf.multiply(batch_tensors, 255.0)
@@ -197,8 +197,6 @@ class VggNet(object):
                 raise Exception('-_-')
 
             self._layers[layer_name] = batch_tensors
-
-        return batch_tensors
 
     def __getattr__(self, name):
         """
