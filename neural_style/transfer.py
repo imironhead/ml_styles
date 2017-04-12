@@ -110,11 +110,16 @@ def build_vgg():
     style_end_layers = \
         ['', 'conv1_2', 'conv2_2', 'conv3_2', 'conv4_2', 'conv5_2']
 
+    # ignore unnecessary layers
     if level_content >= level_style:
         end_layer = content_end_layers[level_content]
     else:
         end_layer = style_end_layers[level_style]
 
+    # a 'trainable' variable for:
+    #   variable of content image to get content features.
+    #   variable of style image to get style features.
+    #   variable of result image.
     upstream = tf.get_variable(
         'upstream',
         [1, 224, 224, 3],
@@ -130,11 +135,13 @@ def content_features(vgg, content):
 
     last_layer = 'conv{}_2'.format(level_content)
 
-    set_upstream = vgg.upstream.assign(content)
-
     with tf.Session() as session:
+        # assign the content image to the upstream of the vgg.
+        set_upstream = vgg.upstream.assign(content)
+
         session.run(set_upstream)
 
+        # get the content features from the last layers.
         return session.run(vgg.__getattr__(last_layer))
 
 
@@ -148,23 +155,28 @@ def style_features(vgg, style):
     for i in range(1, level_style + 1):
         layer = vgg.__getattr__('conv{}_1'.format(i))
 
+        # transpose to [batch, channel, height, width]
         layer = tf.transpose(layer, [0, 3, 1, 2])
 
         shape = tf.shape(layer)
 
         count, channels, length = shape[0], shape[1], shape[2] * shape[3]
 
+        # flatten pixels of each style channel.
         layer = tf.reshape(layer, (count, channels, length))
 
+        # gram matrix of style
         gram = tf.matmul(layer, layer, transpose_b=True)
 
         features.append(gram)
 
-    set_upstream = vgg.upstream.assign(style)
-
     with tf.Session() as session:
+        # assign the style image to the upstream of vgg.
+        set_upstream = vgg.upstream.assign(style)
+
         session.run(set_upstream)
 
+        # get the style features (gram matrix) from each layer.
         return session.run(features)
 
 
@@ -173,21 +185,22 @@ def content_loss(vgg, content):
     """
     level_content = tf.app.flags.FLAGS.content_level
 
+    # reconstruct only style if content level is 0.
     if level_content == 0:
         return 0.0
 
-    weight_content = tf.app.flags.FLAGS.content_weight
-
+    # we want to reconstruct a new image with simular content.
     target_features = content_features(vgg, content)
 
     target_features = tf.constant(target_features)
 
-    #
-    level_content = tf.app.flags.FLAGS.content_level
-
+    # get the feature of the image we are reconstructing.
     last_layer = 'conv{}_2'.format(level_content)
 
     source_features = vgg.__getattr__(last_layer)
+
+    #
+    weight_content = tf.app.flags.FLAGS.content_weight
 
     return weight_content * tf.nn.l2_loss(source_features - target_features)
 
@@ -197,34 +210,39 @@ def style_loss(vgg, style):
     """
     level_style = tf.app.flags.FLAGS.style_level
 
+    # reconstruct only high level content if style level is 0.
     if level_style == 0:
         return 0.0
 
-    weight_style = tf.app.flags.FLAGS.style_weight
-
+    # we want to reconstruct a new image with simular style features.
     target_features = style_features(vgg, style)
 
     #
-    level_style = tf.app.flags.FLAGS.style_level
-
     all_loss = 0
 
     for i in range(1, level_style + 1):
         layer = vgg.__getattr__('conv{}_1'.format(i))
 
+        # transpose to [batch, channel, height, width]
         layer = tf.transpose(layer, [0, 3, 1, 2])
 
         shape = tf.shape(layer)
 
         count, channels, length = shape[0], shape[1], shape[2] * shape[3]
 
+        # flatten pixels of each layer.
         layer = tf.reshape(layer, (count, channels, length))
 
+        # the gram matrix
         gram = tf.matmul(layer, layer, transpose_b=True)
 
+        # length * length: Ml (height * width)
+        # level_style: weight of style loss for each layer.
         m = tf.cast(length * length * level_style, tf.float32)
 
         all_loss += tf.nn.l2_loss(gram - target_features[i - 1]) / m
+
+    weight_style = tf.app.flags.FLAGS.style_weight
 
     return weight_style * all_loss
 
@@ -235,53 +253,79 @@ def transfer_loss(vgg, content, style):
     return content_loss(vgg, content) + style_loss(vgg, style)
 
 
-def train():
+def transfer_trainer(vgg, loss):
     """
     """
-    content, content_shape = load_image(tf.app.flags.FLAGS.content_path)
-    style, style_shape = load_image(tf.app.flags.FLAGS.style_path)
+    return tf.train.AdamOptimizer(1e-2).minimize(loss)
 
-    vgg = build_vgg()
 
-    reporter = tf.summary.FileWriter(tf.app.flags.FLAGS.log_path)
+def transfer_reporter():
+    """
+    """
+    return tf.summary.FileWriter(tf.app.flags.FLAGS.log_path)
 
+
+def transfer_summary(vgg, loss, content_shape):
+    """
+    summaries of loss and result image.
+    """
     image = tf.add(vgg.upstream, VggNet.mean_color_bgr())
     image = tf.image.resize_images(image, content_shape)
     image = tf.saturate_cast(image, tf.uint8)
     image = tf.reverse(image, [3])
 
-    image_summary = tf.summary.image('generated image', image, max_outputs=2)
+    summary_image = tf.summary.image('generated image', image, max_outputs=1)
 
-    loss = transfer_loss(vgg, content, style)
+    summary_loss = tf.summary.scalar('transfer loss', loss)
 
-    trainer = tf.train \
-        .AdamOptimizer(1e-2) \
-        .minimize(loss)
-
-    with tf.Session() as session:
-        session.run(tf.global_variables_initializer())
-
-        noise = tf.random_uniform([1, 224, 224, 3], 0.0, 255.0)
-        noise = tf.subtract(noise, VggNet.mean_color_bgr())
-
-        initialize_upstream = vgg.upstream.assign(noise)
-
-        session.run(initialize_upstream)
-
-        for step in range(100000000):
-            step_loss, summary, _ = session.run([loss, image_summary, trainer])
-
-            if step % 500 == 0:
-                print('step: {}, loss: {}'.format(step, step_loss))
-
-                reporter.add_summary(summary, step)
+    return tf.summary.merge([summary_image, summary_loss])
 
 
 def main(_):
     """
+    arXiv:1508.06576
+
+    A Neural Algorithm of Artistic Style
     """
     sanity_check()
-    train()
+
+    content, content_shape = load_image(tf.app.flags.FLAGS.content_path)
+
+    style, style_shape = load_image(tf.app.flags.FLAGS.style_path)
+
+    vgg = build_vgg()
+
+    loss = transfer_loss(vgg, content, style)
+
+    trainer = transfer_trainer(vgg, loss)
+
+    reporter = transfer_reporter()
+
+    summary = transfer_summary(vgg, loss, content_shape)
+
+    with tf.Session() as session:
+        session.run(tf.global_variables_initializer())
+
+        # start optimizing from a random image.
+        noise = tf.random_uniform([1, 224, 224, 3], 0.0, 255.0)
+
+        # subtract mean color for vgg.
+        # reversing is not necessary since the image is a random one.
+        noise = tf.subtract(noise, VggNet.mean_color_bgr())
+
+        initialize_upstream = vgg.upstream.assign(noise)
+
+        # assign the random image to the input tensor of vgg.
+        # the result image will be generated on the upstream of vgg.
+        session.run(initialize_upstream)
+
+        for step in range(100000000):
+            _loss, _summary, _ = session.run([loss, summary, trainer])
+
+            if step % 500 == 0:
+                print('step: {}, loss: {}'.format(step, _loss))
+
+                reporter.add_summary(_summary, step)
 
 
 if __name__ == '__main__':
