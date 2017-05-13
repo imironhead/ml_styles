@@ -306,14 +306,10 @@ def main(_):
     with tf.Session() as session:
         session.run(tf.global_variables_initializer())
 
-        # start optimizing from a random image.
-        noise = tf.random_uniform([1, 224, 224, 3], 0.0, 255.0)
-
         # subtract mean color for vgg.
-        # reversing is not necessary since the image is a random one.
-        noise = tf.subtract(noise, VggNet.mean_color_bgr())
+        initial_image = tf.subtract(content, VggNet.mean_color_bgr())
 
-        initialize_upstream = vgg.upstream.assign(noise)
+        initialize_upstream = vgg.upstream.assign(initial_image)
 
         # assign the random image to the input tensor of vgg.
         # the result image will be generated on the upstream of vgg.
