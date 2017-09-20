@@ -275,8 +275,8 @@ def build_super_resolution_network(
 
 def build_style_transfer_network(
         image_content,
-        image_style,
-        vgg16_path,
+        image_style=None,
+        vgg16_path=None,
         content_weight=1.0,
         content_level=2,
         style_weight=1000.0,
